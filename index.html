@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rook Scorekeeper</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* A little extra style for better visual feedback on buttons */
+        button:active {
+            transform: scale(0.95);
+            transition: transform 0.1s;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen font-sans p-2 sm:p-4">
+
+    <div id="app-container">
+        <header class="text-center my-4 sm:my-6">
+            <h1 class="text-3xl sm:text-4xl lg:text-5xl font-bold text-gray-100 tracking-wider">Rook Scorekeeper</h1>
+        </header>
+
+        <main class="max-w-7xl mx-auto">
+            <div id="new-game-view">
+                <div class="max-w-md mx-auto bg-gray-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-2xl font-bold mb-4 text-center">Enter Player Names</h2>
+                    <div id="player-inputs-container" class="space-y-3 mb-6"></div>
+                    <div class="flex justify-between items-center">
+                         <button id="add-player-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                            Add Player
+                        </button>
+                        <button id="start-game-btn" class="bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 px-4 rounded-md transition-colors">
+                            Start Game
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- View for the main scoreboard (hidden by default) -->
+            <div id="scoreboard-view" class="hidden">
+                 <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
+                    <div class="w-full overflow-x-auto">
+                        <table class="w-full min-w-[600px] border-collapse text-center">
+                            <thead id="scoreboard-head">
+                            </thead>
+                            <tbody id="scoreboard-body">
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="action-buttons-container" class="mt-6 text-center"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script type="module">
+        // We manage the app's state using simple variables.
+        // When state changes, we call render functions to update the UI.
+        let gameState = 'NEW_GAME'; // 'NEW_GAME', 'START_HAND', 'SCORE_HAND', 'END'
+        let players = [];
+        let currentHand = 1;
+        let currentHandSuccesses = {}; // Tracks { playerId: boolean } for scoring phase
+
+        const newGameView = document.getElementById('new-game-view');
+        const scoreboardView = document.getElementById('scoreboard-view');
+        const playerInputsContainer = document.getElementById('player-inputs-container');
+        const addPlayerBtn = document.getElementById('add-player-btn');
+        const startGameBtn = document.getElementById('start-game-btn');
+        const scoreboardHead = document.getElementById('scoreboard-head');
+        const scoreboardBody = document.getElementById('scoreboard-body');
+        const actionButtonsContainer = document.getElementById('action-buttons-container');
+
+        /**
+         * The main render function. It decides which view to show.
+         */
+        const render = () => {
+            if (gameState === 'NEW_GAME') {
+                newGameView.classList.remove('hidden');
+                scoreboardView.classList.add('hidden');
+                renderNewGameSetup();
+            } else {
+                newGameView.classList.add('hidden');
+                scoreboardView.classList.remove('hidden');
+                renderScoreboard();
+                renderActionButtons();
+            }
+        };
+
+        /**
+         * Renders the player input fields for the "new game" screen.
+         */
+        const renderNewGameSetup = () => {
+            playerInputsContainer.innerHTML = ''; // Clear previous inputs
+            players.forEach((player, index) => {
+                const isLast = index === players.length - 1;
+                const playerInputWrapper = document.createElement('div');
+                playerInputWrapper.className = 'flex items-center space-x-2';
+
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.placeholder = `Player ${index + 1}`;
+                input.value = player.name;
+                input.className = 'w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 player-name-input';
+                input.dataset.id = player.id;
+                
+                input.addEventListener('input', (e) => {
+                    const playerToUpdate = players.find(p => p.id === player.id);
+                    if (playerToUpdate) playerToUpdate.name = e.target.value;
+                });
+                
+                if (isLast) {
+                    input.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddPlayer();
+                        }
+                    });
+                }
+                
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'text-gray-400 hover:text-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors';
+                removeBtn.disabled = players.length <= 1;
+                removeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>`;
+                removeBtn.addEventListener('click', () => handleRemovePlayer(player.id));
+                
+                playerInputWrapper.appendChild(input);
+                playerInputWrapper.appendChild(removeBtn);
+                playerInputsContainer.appendChild(playerInputWrapper);
+
+                if (isLast) {
+                    input.focus(); // Auto-focus the last (newest) input
+                }
+            });
+            addPlayerBtn.disabled = players.length >= 9;
+        };
+        
+        const renderScoreboard = () => {
+            // --- Calculate Winner Info if game is over ---
+            let winnerInfo = null;
+            if (gameState === 'END') {
+                const playersWithFinalScores = players.map(p => ({
+                    ...p,
+                    finalScore: p.scores.reduce((sum, score) => sum + score, 0)
+                }));
+                if (playersWithFinalScores.length > 0) {
+                    const maxScore = Math.max(...playersWithFinalScores.map(p => p.finalScore));
+                    if (maxScore > 0) {
+                        const winnerIds = playersWithFinalScores
+                            .filter(p => p.finalScore === maxScore)
+                            .map(p => p.id);
+                        winnerInfo = { winnerIds, maxScore };
+                    }
+                }
+            }
+
+            scoreboardHead.innerHTML = '';
+            const headerRow = document.createElement('tr');
+            headerRow.className = 'border-b-2 border-gray-600';
+            headerRow.innerHTML = `<th class="p-3 font-semibold text-left text-gray-300 w-36">Hand</th>`;
+            players.forEach(player => {
+                const isWinner = winnerInfo?.winnerIds.includes(player.id);
+                headerRow.innerHTML += `
+                    <th class="p-3 font-semibold text-gray-100 truncate border-r border-gray-600 ${isWinner ? 'bg-green-500/20' : ''}">
+                        ${player.name}
+                    </th>`;
+            });
+            scoreboardHead.appendChild(headerRow);
+            
+            scoreboardBody.innerHTML = '';
+            const handDetails = Array.from({ length: 10 }, (_, i) => ({ hand: i + 1, cards: 10 - i, points: i + 1 }));
+            
+            handDetails.forEach(({ hand, cards, points }) => {
+                const handIndex = hand - 1;
+                const isCurrentHand = hand === currentHand;
+                const isPastHand = hand < currentHand;
+
+                const row = document.createElement('tr');
+                row.className = `border-b border-gray-700 ${isCurrentHand && gameState !== 'END' ? 'bg-gray-700/50' : ''}`;
+                
+                // Hand Info Cell
+                row.innerHTML = `
+                    <td class="p-3 text-left font-medium text-gray-400">
+                        <div class="flex flex-col">
+                            <span>Round ${hand}</span>
+                            <span class="text-xs text-gray-500">${cards} cards, ${points} pts</span>
+                        </div>
+                    </td>`;
+                    
+                // Player Cells
+                players.forEach(player => {
+                    const totalScoreBeforeThisHand = player.scores.slice(0, handIndex).reduce((sum, score) => sum + score, 0);
+                    const playerCell = document.createElement('td');
+                    playerCell.className = 'p-3 font-bold text-2xl border-r border-gray-600';
+                    
+                    if (isCurrentHand && gameState === 'START_HAND') {
+                        const bid = player.bids[handIndex];
+                        playerCell.innerHTML = `
+                            <div class="flex items-center justify-center space-x-2 sm:space-x-3">
+                                <button data-player-id="${player.id}" data-change="-1" class="bid-btn text-xl p-1 rounded-full w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center bg-gray-600 hover:bg-gray-500">-</button>
+                                <span class="text-lg font-mono w-8">${bid}</span>
+                                <button data-player-id="${player.id}" data-change="1" class="bid-btn text-xl p-1 rounded-full w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center bg-gray-600 hover:bg-gray-500">+</button>
+                            </div>`;
+                    } else if (isCurrentHand && gameState === 'SCORE_HAND') {
+                        const isSuccess = currentHandSuccesses[player.id];
+                        const pointsThisHand = isSuccess ? points + player.bids[handIndex] : 0;
+                        const currentDisplayScore = totalScoreBeforeThisHand + pointsThisHand;
+                        playerCell.dataset.playerId = player.id;
+                        playerCell.classList.add('cursor-pointer', 'transition-colors', 'duration-300');
+                        playerCell.classList.toggle('bg-green-800/50', isSuccess);
+                        playerCell.classList.toggle('text-green-300', isSuccess);
+                        playerCell.classList.toggle('bg-red-800/50', !isSuccess);
+                        playerCell.classList.toggle('text-red-300', !isSuccess);
+                        playerCell.innerHTML = `
+                            <div class="relative">
+                                ${currentDisplayScore}
+                                <span class="absolute top-[-8px] right-0 text-xs font-normal text-gray-400">${player.bids[handIndex]}</span>
+                            </div>`;
+                    } else if (isPastHand || gameState === 'END') {
+                        const totalScoreAtThisHand = player.scores.slice(0, hand).reduce((sum, score) => sum + score, 0);
+                        const wasSuccessful = player.scores[handIndex] > 0;
+                        playerCell.classList.toggle('text-gray-100', wasSuccessful);
+                        playerCell.classList.toggle('text-gray-500', !wasSuccessful);
+                         playerCell.innerHTML = `
+                            <div class="relative">
+                                ${totalScoreAtThisHand}
+                                <span class="absolute top-[-8px] right-0 text-xs font-normal text-gray-400">${player.bids[handIndex]}</span>
+                            </div>`;
+                    }
+                    row.appendChild(playerCell);
+                });
+                scoreboardBody.appendChild(row);
+            });
+        };
+        
+        const renderActionButtons = () => {
+            actionButtonsContainer.innerHTML = ''; // Clear previous buttons
+            if (gameState === 'START_HAND') {
+                const btn = document.createElement('button');
+                btn.id = 'score-hand-btn';
+                btn.className = 'bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 px-6 rounded-md transition-colors text-lg';
+                btn.textContent = 'Score Hand';
+                actionButtonsContainer.appendChild(btn);
+            } else if (gameState === 'SCORE_HAND') {
+                actionButtonsContainer.innerHTML = `
+                    <p class="text-gray-400 mb-3">Click on the players who made their bid.</p>
+                    <button id="next-hand-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-6 rounded-md transition-colors text-lg">
+                        ${currentHand === 10 ? 'End Game' : 'Finalize & Go To Next Hand'}
+                    </button>`;
+            } else if (gameState === 'END') {
+                actionButtonsContainer.innerHTML = `
+                    <div class="space-y-4">
+                        <h2 class="text-3xl font-bold text-gray-200">Game Over!</h2>
+                        <button id="new-game-btn" class="bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 px-6 rounded-md transition-colors text-lg">
+                            Start New Game
+                        </button>
+                    </div>`;
+            }
+        };
+        const handleAddPlayer = () => {
+            if (players.length < 9) {
+                players.push({ id: crypto.randomUUID(), name: '' });
+                render();
+            }
+        };
+        
+        const handleRemovePlayer = (id) => {
+            if (players.length > 1) {
+                players = players.filter(p => p.id !== id);
+                render();
+            }
+        };
+
+        const handleStartGame = () => {
+            const validPlayers = players
+                .map(p => ({...p, name: p.name.trim() }))
+                .filter(p => p.name !== '');
+
+            if (validPlayers.length < 2) {
+                alert("Please enter names for at least 2 players.");
+                return;
+            }
+            
+            // Initialize player data for the game
+            players = validPlayers.map(p => ({
+                ...p,
+                bids: Array(10).fill(0),
+                scores: Array(10).fill(0),
+            }));
+            gameState = 'START_HAND';
+            render();
+        };
+        
+        const handleBidChange = (playerId, change) => {
+            const player = players.find(p => p.id === playerId);
+            if (!player) return;
+
+            const handIndex = currentHand - 1;
+            const cardsInHand = 10 - handIndex;
+            const currentBid = player.bids[handIndex];
+            let newBid = currentBid + change;
+            
+            if (newBid < 0) newBid = 0;
+            if (newBid > cardsInHand) newBid = cardsInHand;
+            
+            player.bids[handIndex] = newBid;
+            render();
+        };
+        
+        const handleGoToScoreHand = () => {
+            // Assume no one succeeded initially
+            currentHandSuccesses = players.reduce((acc, player) => {
+                acc[player.id] = false;
+                return acc;
+            }, {});
+            gameState = 'SCORE_HAND';
+            render();
+        };
+
+        const handleToggleSuccess = (playerId) => {
+            currentHandSuccesses[playerId] = !currentHandSuccesses[playerId];
+            render();
+        };
+
+        const handleNextHand = () => {
+            const handIndex = currentHand - 1;
+            const pointValue = currentHand;
+
+            // "Commit" the scores for the hand that just finished
+            players.forEach(player => {
+                const bid = player.bids[handIndex];
+                const wasSuccessful = currentHandSuccesses[player.id];
+                player.scores[handIndex] = wasSuccessful ? pointValue + bid : 0;
+            });
+
+            if (currentHand >= 10) {
+                gameState = 'END';
+            } else {
+                currentHand++;
+                currentHandSuccesses = {};
+                gameState = 'START_HAND';
+            }
+            render();
+        };
+        
+        const handleNewGame = () => {
+            gameState = 'NEW_GAME';
+            players = [];
+            currentHand = 1;
+            currentHandSuccesses = {};
+            init(); // Re-initialize the app state
+        };
+
+        addPlayerBtn.addEventListener('click', handleAddPlayer);
+        startGameBtn.addEventListener('click', handleStartGame);
+        
+        document.body.addEventListener('click', (e) => {
+            // Bid buttons in START_HAND
+            const bidBtn = e.target.closest('.bid-btn');
+            if (bidBtn) {
+                const playerId = bidBtn.dataset.playerId;
+                const change = parseInt(bidBtn.dataset.change, 10);
+                handleBidChange(playerId, change);
+                return;
+            }
+            
+            if (gameState === 'SCORE_HAND') {
+                const cell = e.target.closest('td[data-player-id]');
+                if (cell) {
+                    handleToggleSuccess(cell.dataset.playerId);
+                    return;
+                }
+            }
+            
+            // Action buttons
+            const actionBtn = e.target.closest('button');
+            if (!actionBtn) return;
+            
+            switch(actionBtn.id) {
+                case 'score-hand-btn': handleGoToScoreHand(); break;
+                case 'next-hand-btn': handleNextHand(); break;
+                case 'new-game-btn': handleNewGame(); break;
+            }
+        });
+        
+        // This function sets up the initial state and renders the app for the first time.
+        const init = () => {
+            players.push({ id: crypto.randomUUID(), name: '' });
+            render();
+        };
+        document.addEventListener('DOMContentLoaded', init);
+
+    </script>
+</body>
+</html>
